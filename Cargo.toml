@@ -1,0 +1,18 @@
+[package]
+
+name = "pgr21-online"
+version = "0.1.0"
+authors = ["Barosl Lee"]
+
+[dependencies]
+
+#websocket = "*"
+websocket = { path = "../rust-websocket" }
+
+#mysql = "*"
+mysql = { path = "../rust-mysql-simple" }
+
+rustc-serialize = "*"
+time = "*"
+toml = "*"
+rand = "*"
