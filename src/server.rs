@@ -59,7 +59,7 @@ struct GlobalState {
 }
 
 struct LocalState {
-    unit_id: Option<i32>,
+    unit_ids: Vec<i32>,
     wr: Arc<Mutex<Sender<WebSocketStream>>>,
 }
 
@@ -110,7 +110,7 @@ fn on_msg(g_state: &GlobalState,
                 map.units[tile_idx as usize].push(unit.id);
             }
 
-            l_state.unit_id = Some(unit_id);
+            l_state.unit_ids.push(unit_id);
 
             broadcast(&g_state.wrs, Msg {
                 cmd: "unit".to_string(),
@@ -146,9 +146,13 @@ fn on_msg(g_state: &GlobalState,
                 _ => return Err("Invalid speed".to_string()),
             };
 
-            let unit_id = match l_state.unit_id {
-                Some(unit_id) => unit_id,
-                None => return Err("unit_id not set".to_string()),
+            let unit_id = match msg.id {
+                Some(unit_id) => if l_state.unit_ids.iter().any(|x| *x == unit_id) {
+                    unit_id
+                } else {
+                    return Err(format!("Invalid unit_id: {:?}", unit_id));
+                },
+                _ => return Err("msg.id not exists".to_string()),
             };
 
             {
@@ -416,7 +420,7 @@ pub fn start() {
             let (wr, mut rd) = sock.split();
 
             let mut l_state = LocalState {
-                unit_id: None,
+                unit_ids: vec![],
                 wr: Arc::new(Mutex::new(wr)),
             };
 
@@ -445,27 +449,23 @@ pub fn start() {
                 }
             }
 
-            match l_state.unit_id {
-                Some(unit_id) => {
-                    let unit = g_state.units.lock().unwrap().remove(&(unit_id as usize)).unwrap();
+            for unit_id in l_state.unit_ids {
+                let unit = g_state.units.lock().unwrap().remove(&(unit_id as usize)).unwrap();
 
-                    {
-                        let mut map = g_state.map.lock().unwrap();
-                        let tile_idx = (unit.x + unit.y * map.width) as usize;
-                        map.units[tile_idx].iter().position(|x| *x == unit.id).map(|idx| {
-                            map.units[tile_idx].remove(idx);
-                        });
-                    }
-
-                    broadcast(&g_state.wrs, Msg {
-                        cmd: "remove".to_string(),
-                        id: Some(unit_id),
-
-                        ..Default::default()
+                {
+                    let mut map = g_state.map.lock().unwrap();
+                    let tile_idx = (unit.x + unit.y * map.width) as usize;
+                    map.units[tile_idx].iter().position(|x| *x == unit.id).map(|idx| {
+                        map.units[tile_idx].remove(idx);
                     });
                 }
 
-                _ => ()
+                broadcast(&g_state.wrs, Msg {
+                    cmd: "remove".to_string(),
+                    id: Some(unit_id),
+
+                    ..Default::default()
+                });
             }
 
             g_state.wrs.lock().unwrap().remove(&cli_id);
