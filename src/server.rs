@@ -13,6 +13,8 @@ use std::fs::File;
 use toml;
 use std::io::Read;
 use rand;
+use crypto::sha1::Sha1;
+use crypto::digest::Digest;
 
 #[derive(Clone)]
 struct Unit {
@@ -32,6 +34,9 @@ struct Msg {
     y: Option<i32>,
 
     speed: Option<i32>,
+
+    name: Option<String>,
+    signature: Option<String>,
 }
 
 #[derive(Clone)]
@@ -61,6 +66,7 @@ struct GlobalState {
 struct LocalState {
     unit_ids: Vec<i32>,
     wr: Arc<Mutex<Sender<WebSocketStream>>>,
+    username: Option<String>,
 }
 
 #[allow(unused_must_use)]
@@ -82,6 +88,24 @@ fn on_msg(g_state: &GlobalState,
           msg: Msg,
          ) -> Result<(), String> {
     match &*msg.cmd {
+        "login" => {
+            match (msg.name, msg.signature) {
+                (Some(name), Some(signature)) => {
+                    let mut hasher = Sha1::new();
+                    hasher.input_str(&*name);
+                    hasher.input_str(&*g_state.key);
+                    let hash = hasher.result_str();
+                    if hash != signature {
+                        return Err("Invalid signature".to_string());
+                    }
+
+                    l_state.username = Some(name);
+                }
+
+                _ => return Err("name and signature must be provided".to_string())
+            }
+        }
+
         "start" => {
             let unit_id = {
                 let mut last_unit_id = g_state.last_unit_id.lock().unwrap();
@@ -450,6 +474,7 @@ pub fn start() {
             let mut l_state = LocalState {
                 unit_ids: vec![],
                 wr: Arc::new(Mutex::new(wr)),
+                username: None,
             };
 
             g_state.wrs.lock().unwrap().insert(cli_id, l_state.wr.clone());

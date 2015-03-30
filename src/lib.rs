@@ -6,5 +6,6 @@ extern crate mysql;
 extern crate time;
 extern crate toml;
 extern crate rand;
+extern crate crypto;
 
 pub mod server;
