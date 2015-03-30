@@ -1,7 +1,6 @@
 use websocket::{Server, Receiver, Message, WebSocketStream};
 use websocket::Sender as SenderTrait;
 use websocket::server::sender::Sender;
-use cfg;
 use std::thread::{spawn, sleep};
 use rustc_serialize::json;
 use std::sync::{Arc, Mutex};
@@ -309,8 +308,35 @@ fn load_map(fname: &str) -> Map {
     }
 }
 
+macro_rules! toml_get {
+    ($toml: expr, $name: expr, $type_: path) => {
+        match $toml.get($name).unwrap() {
+            &$type_(ref val) => {
+                val.clone()
+            }
+
+            _ => panic!("Invalid TOML")
+        }
+    }
+}
+
+fn load_cfg(fname: &str) -> (u16, String, i32) {
+    let mut text = String::new();
+    File::open(fname).unwrap().read_to_string(&mut text).unwrap();
+    let toml = toml::Parser::new(&*text).parse().unwrap();
+
+    let cfg = toml_get!(toml, "cfg", toml::Value::Table);
+    let port = toml_get!(cfg, "port", toml::Value::Integer);
+    let key = toml_get!(cfg, "key", toml::Value::String);
+    let unit_speed = toml_get!(cfg, "unit_speed", toml::Value::Integer);
+
+    (port as u16, key, unit_speed as i32)
+}
+
 pub fn start() {
-    let server = Server::bind(("0.0.0.0", cfg::PORT)).unwrap();
+    let (port, key, unit_speed) = load_cfg("cfg.toml");
+
+    let server = Server::bind(("0.0.0.0", port)).unwrap();
 
     let map = load_map("map.toml");
 
@@ -349,7 +375,7 @@ pub fn start() {
                     };
 
                     let mut should_move = false;
-                    let mut speed = cfg::UNIT_SPEED;
+                    let mut speed = unit_speed;
 
                     if let Some(tile_idx) = tile_idx {
                         let map = g_state.map.lock().unwrap();
