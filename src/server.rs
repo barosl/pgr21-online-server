@@ -55,6 +55,7 @@ struct GlobalState {
     units: Arc<Mutex<VecMap<Unit>>>,
     last_unit_id: Arc<Mutex<i32>>,
     wrs: Arc<Mutex<VecMap<Arc<Mutex<Sender<WebSocketStream>>>>>>,
+    key: String,
 }
 
 struct LocalState {
@@ -345,6 +346,7 @@ pub fn start() {
         units: Arc::new(Mutex::new(VecMap::new())),
         last_unit_id: Arc::new(Mutex::new(0)),
         wrs: Arc::new(Mutex::new(VecMap::new())),
+        key: key,
     };
 
     {
