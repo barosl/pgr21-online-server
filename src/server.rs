@@ -25,6 +25,8 @@ struct Unit {
     cooldown: SteadyTime,
     name: String,
     img: String,
+    text: String,
+    style: String,
 }
 
 #[derive(RustcDecodable, RustcEncodable, Default)]
@@ -40,6 +42,8 @@ struct Msg {
     name: Option<String>,
     signature: Option<String>,
     img: Option<String>,
+    text: Option<String>,
+    style: Option<String>,
 }
 
 #[derive(Clone)]
@@ -65,6 +69,7 @@ struct GlobalState {
     wrs: Arc<Mutex<VecMap<Arc<Mutex<Sender<WebSocketStream>>>>>>,
     key: String,
     default_img: String,
+    privileged: Vec<String>,
 }
 
 struct LocalState {
@@ -127,7 +132,7 @@ fn on_msg(g_state: &GlobalState,
                 map.init_places[rand::random::<usize>() % map.init_places.len()]
             };
 
-            let unit = Unit {
+            let mut unit = Unit {
                 id: unit_id,
                 x: init_place.0,
                 y: init_place.1,
@@ -135,7 +140,32 @@ fn on_msg(g_state: &GlobalState,
                 cooldown: SteadyTime::now(),
                 name: unit_name,
                 img: g_state.default_img.clone(),
+                text: "".to_string(),
+                style: "".to_string(),
             };
+
+            if let &Some(ref username) = &l_state.username {
+                if g_state.privileged.iter().any(|x| *x == *username) {
+                    if let Some(x) = msg.x {
+                        if let Some(y) = msg.y {
+                            unit.x = x;
+                            unit.y = y;
+                        }
+                    }
+
+                    if let Some(img) = msg.img {
+                        unit.img = img.clone();
+                    }
+
+                    if let Some(text) = msg.text {
+                        unit.text = text.clone();
+                    }
+
+                    if let Some(style) = msg.style {
+                        unit.style = style.clone();
+                    }
+                }
+            }
 
             g_state.units.lock().unwrap().insert(unit_id as usize, unit.clone());
 
@@ -161,6 +191,8 @@ fn on_msg(g_state: &GlobalState,
                 y: Some(unit.y),
                 name: Some(unit.name),
                 img: Some(unit.img),
+                text: Some(unit.text),
+                style: Some(unit.style),
 
                 ..Default::default()
             });
@@ -175,6 +207,8 @@ fn on_msg(g_state: &GlobalState,
                     y: Some(unit.y),
                     name: Some(unit.name.clone()),
                     img: Some(unit.img.clone()),
+                    text: Some(unit.text.clone()),
+                    style: Some(unit.style.clone()),
 
                     ..Default::default()
                 });
@@ -362,7 +396,7 @@ macro_rules! toml_get {
     }
 }
 
-fn load_cfg(fname: &str) -> (u16, String, i32, String) {
+fn load_cfg(fname: &str) -> (u16, String, i32, String, Vec<String>) {
     let mut text = String::new();
     File::open(fname).unwrap().read_to_string(&mut text).unwrap();
     let toml = toml::Parser::new(&*text).parse().unwrap();
@@ -372,12 +406,16 @@ fn load_cfg(fname: &str) -> (u16, String, i32, String) {
     let key = toml_get!(cfg, "key", toml::Value::String);
     let unit_speed = toml_get!(cfg, "unit_speed", toml::Value::Integer);
     let default_img = toml_get!(cfg, "default_img", toml::Value::String);
+    let privileged = toml_get!(cfg, "privileged", toml::Value::Array).iter().map(|x| match *x {
+        toml::Value::String(ref val) => val.clone(),
+        _ => panic!("Invalid TOML"),
+    }).collect();
 
-    (port as u16, key, unit_speed as i32, default_img)
+    (port as u16, key, unit_speed as i32, default_img, privileged)
 }
 
 pub fn start() {
-    let (port, key, unit_speed, default_img) = load_cfg("cfg.toml");
+    let (port, key, unit_speed, default_img, privileged) = load_cfg("cfg.toml");
 
     let server = Server::bind(("0.0.0.0", port)).unwrap();
 
@@ -390,6 +428,7 @@ pub fn start() {
         wrs: Arc::new(Mutex::new(VecMap::new())),
         key: key,
         default_img: default_img,
+        privileged: privileged,
     };
 
     {
