@@ -23,6 +23,8 @@ struct Unit {
     y: i32,
     speed: (i32, i32),
     cooldown: SteadyTime,
+    name: String,
+    img: String,
 }
 
 #[derive(RustcDecodable, RustcEncodable, Default)]
@@ -37,6 +39,7 @@ struct Msg {
 
     name: Option<String>,
     signature: Option<String>,
+    img: Option<String>,
 }
 
 #[derive(Clone)]
@@ -61,6 +64,7 @@ struct GlobalState {
     last_unit_id: Arc<Mutex<i32>>,
     wrs: Arc<Mutex<VecMap<Arc<Mutex<Sender<WebSocketStream>>>>>>,
     key: String,
+    default_img: String,
 }
 
 struct LocalState {
@@ -107,6 +111,11 @@ fn on_msg(g_state: &GlobalState,
         }
 
         "start" => {
+            let unit_name = match l_state.username {
+                Some(ref username) => username.clone(),
+                None => return Err("Log in first".to_string()),
+            };
+
             let unit_id = {
                 let mut last_unit_id = g_state.last_unit_id.lock().unwrap();
                 *last_unit_id += 1;
@@ -124,6 +133,8 @@ fn on_msg(g_state: &GlobalState,
                 y: init_place.1,
                 speed: (0, 0),
                 cooldown: SteadyTime::now(),
+                name: unit_name,
+                img: g_state.default_img.clone(),
             };
 
             g_state.units.lock().unwrap().insert(unit_id as usize, unit.clone());
@@ -136,32 +147,38 @@ fn on_msg(g_state: &GlobalState,
 
             l_state.unit_ids.push(unit_id);
 
-            broadcast(&g_state.wrs, Msg {
-                cmd: "unit".to_string(),
-                id: Some(unit_id),
-                x: Some(unit.x),
-                y: Some(unit.y),
-
-                ..Default::default()
-            });
-
-            for (unit_id, unit) in g_state.units.lock().unwrap().iter() {
-                send(&l_state.wr, Msg {
-                    cmd: "unit".to_string(),
-                    id: Some(unit_id as i32),
-                    x: Some(unit.x),
-                    y: Some(unit.y),
-
-                    ..Default::default()
-                });
-            }
-
             send(&l_state.wr, Msg {
                 cmd: "you".to_string(),
                 id: Some(unit_id),
 
                 ..Default::default()
             });
+
+            broadcast(&g_state.wrs, Msg {
+                cmd: "unit".to_string(),
+                id: Some(unit_id),
+                x: Some(unit.x),
+                y: Some(unit.y),
+                name: Some(unit.name),
+                img: Some(unit.img),
+
+                ..Default::default()
+            });
+
+            for (unit_idx, unit) in g_state.units.lock().unwrap().iter() {
+                if unit_id == unit_idx as i32 { continue; }
+
+                send(&l_state.wr, Msg {
+                    cmd: "unit".to_string(),
+                    id: Some(unit_idx as i32),
+                    x: Some(unit.x),
+                    y: Some(unit.y),
+                    name: Some(unit.name.clone()),
+                    img: Some(unit.img.clone()),
+
+                    ..Default::default()
+                });
+            }
         }
 
         "speed" => {
@@ -345,7 +362,7 @@ macro_rules! toml_get {
     }
 }
 
-fn load_cfg(fname: &str) -> (u16, String, i32) {
+fn load_cfg(fname: &str) -> (u16, String, i32, String) {
     let mut text = String::new();
     File::open(fname).unwrap().read_to_string(&mut text).unwrap();
     let toml = toml::Parser::new(&*text).parse().unwrap();
@@ -354,12 +371,13 @@ fn load_cfg(fname: &str) -> (u16, String, i32) {
     let port = toml_get!(cfg, "port", toml::Value::Integer);
     let key = toml_get!(cfg, "key", toml::Value::String);
     let unit_speed = toml_get!(cfg, "unit_speed", toml::Value::Integer);
+    let default_img = toml_get!(cfg, "default_img", toml::Value::String);
 
-    (port as u16, key, unit_speed as i32)
+    (port as u16, key, unit_speed as i32, default_img)
 }
 
 pub fn start() {
-    let (port, key, unit_speed) = load_cfg("cfg.toml");
+    let (port, key, unit_speed, default_img) = load_cfg("cfg.toml");
 
     let server = Server::bind(("0.0.0.0", port)).unwrap();
 
@@ -371,6 +389,7 @@ pub fn start() {
         last_unit_id: Arc::new(Mutex::new(0)),
         wrs: Arc::new(Mutex::new(VecMap::new())),
         key: key,
+        default_img: default_img,
     };
 
     {
@@ -438,7 +457,7 @@ pub fn start() {
                         unit.cooldown = cur_time + Duration::milliseconds(200);
 
                         msgs.push(Msg {
-                            cmd: "unit".to_string(),
+                            cmd: "move".to_string(),
                             id: Some(unit_id as i32),
                             x: Some(unit.x),
                             y: Some(unit.y),
