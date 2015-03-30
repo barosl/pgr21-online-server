@@ -23,6 +23,7 @@ struct Unit {
     y: i32,
     speed: (i32, i32),
     cooldown: SteadyTime,
+    direction: (i32, i32),
     name: String,
     img: String,
     text: String,
@@ -137,6 +138,7 @@ fn on_msg(g_state: &GlobalState,
                 x: init_place.0,
                 y: init_place.1,
                 speed: (0, 0),
+                direction: (0, 0),
                 cooldown: SteadyTime::now(),
                 name: unit_name,
                 img: g_state.default_img.clone(),
@@ -239,6 +241,50 @@ fn on_msg(g_state: &GlobalState,
                 };
 
                 unit.speed = speed;
+
+                if speed != (0, 0) {
+                    unit.direction = speed;
+                }
+            }
+        }
+
+        "click" => {
+            let unit_id = match msg.id {
+                Some(unit_id) => if l_state.unit_ids.iter().any(|x| *x == unit_id) {
+                    unit_id
+                } else {
+                    return Err(format!("Invalid unit_id: {:?}", unit_id));
+                },
+                _ => return Err("msg.id not exists".to_string()),
+            };
+
+            {
+                let mut units = g_state.units.lock().unwrap();
+
+                let unit = match units.get_mut(&(unit_id as usize)) {
+                    Some(unit) => unit,
+                    None => return Err("unit not exists".to_string()),
+                };
+
+                if unit.direction != (0, 0) {
+                    let x = unit.x + unit.direction.0;
+                    let y = unit.y + unit.direction.1;
+
+                    let map = g_state.map.lock().unwrap();
+                    let tile_idx = x + y * map.width;
+
+                    if tile_idx >= 0 && tile_idx < map.units.len() as i32 {
+                        for unit_id in &map.units[tile_idx as usize] {
+                            broadcast(&g_state.wrs, Msg {
+                                cmd: "call".to_string(),
+                                x: Some(unit.id),
+                                y: Some(*unit_id),
+
+                                ..Default::default()
+                            });
+                        }
+                    }
+                }
             }
         }
 
