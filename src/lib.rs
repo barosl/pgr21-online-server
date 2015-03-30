@@ -8,4 +8,3 @@ extern crate toml;
 extern crate rand;
 
 pub mod server;
-mod cfg;
