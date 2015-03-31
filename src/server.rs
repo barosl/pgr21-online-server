@@ -330,6 +330,20 @@ fn on_msg(g_state: &GlobalState,
             }
         }
 
+        "url" => {
+            if let &Some(ref username) = &l_state.username {
+                if g_state.privileged.iter().any(|x| *x == *username) {
+                    broadcast(&g_state.wrs, Msg {
+                        cmd: "url".to_string(),
+                        x: msg.x,
+                        text: msg.text,
+
+                        ..Default::default()
+                    });
+                }
+            }
+        }
+
         "ping" => {
             l_state.wr.lock().unwrap().pinged = SteadyTime::now();
         }
