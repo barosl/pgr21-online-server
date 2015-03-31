@@ -15,6 +15,7 @@ use std::io::Read;
 use rand;
 use crypto::sha1::Sha1;
 use crypto::digest::Digest;
+use std::mem;
 
 #[derive(Clone)]
 struct Unit {
@@ -69,36 +70,45 @@ struct SenderState {
 
 #[derive(Clone)]
 struct GlobalState {
-    map: Arc<Mutex<Map>>,
-    units: Arc<Mutex<VecMap<Unit>>>,
-    last_unit_id: Arc<Mutex<i32>>,
-    wrs: Arc<Mutex<VecMap<Arc<Mutex<SenderState>>>>>,
     key: String,
     default_img: String,
     privileged: Vec<String>,
 }
 
+struct SharedState {
+    map: Map,
+    units: VecMap<Unit>,
+    last_unit_id: i32,
+    wrs: VecMap<SenderState>,
+}
+
 struct LocalState {
     unit_ids: Vec<i32>,
-    wr: Arc<Mutex<SenderState>>,
     username: Option<String>,
+    cli_id: i32,
 }
 
 #[allow(unused_must_use)]
-fn send(wr: &Arc<Mutex<SenderState>>, msg: Msg) {
-    wr.lock().unwrap().sender.send_message(Message::Text(json::encode(&msg).unwrap()));
+fn send(wrs: &mut VecMap<SenderState>, cli_id: i32, msg: Msg) {
+    for wr in wrs.iter_mut() {
+        if wr.0 as i32 == cli_id {
+            wr.1.sender.send_message(Message::Text(json::encode(&msg).unwrap()));
+            break;
+        }
+    }
 }
 
 #[allow(unused_must_use)]
-fn broadcast(wrs: &Arc<Mutex<VecMap<Arc<Mutex<SenderState>>>>>, msg: Msg) {
+fn broadcast(wrs: &mut VecMap<SenderState>, msg: Msg) {
     let msg = Message::Text(json::encode(&msg).unwrap());
 
-    for wr in &*wrs.lock().unwrap() {
-        wr.1.lock().unwrap().sender.send_message(msg.clone());
+    for wr in wrs.iter_mut() {
+        wr.1.sender.send_message(msg.clone());
     }
 }
 
 fn on_msg(g_state: &GlobalState,
+          s_state: &Arc<Mutex<SharedState>>,
           l_state: &mut LocalState,
           msg: Msg,
          ) -> Result<(), String> {
@@ -127,16 +137,14 @@ fn on_msg(g_state: &GlobalState,
                 None => return Err("Log in first".to_string()),
             };
 
+            let mut s_state = s_state.lock().unwrap();
+
             let unit_id = {
-                let mut last_unit_id = g_state.last_unit_id.lock().unwrap();
-                *last_unit_id += 1;
-                *last_unit_id
+                s_state.last_unit_id += 1;
+                s_state.last_unit_id
             };
 
-            let init_place = {
-                let map = g_state.map.lock().unwrap();
-                map.init_places[rand::random::<usize>() % map.init_places.len()]
-            };
+            let init_place = s_state.map.init_places[rand::random::<usize>() % s_state.map.init_places.len()];
 
             let mut unit = Unit {
                 id: unit_id,
@@ -174,27 +182,27 @@ fn on_msg(g_state: &GlobalState,
                 }
             }
 
-            g_state.units.lock().unwrap().insert(unit_id as usize, unit.clone());
+            s_state.units.insert(unit_id as usize, unit.clone());
 
             {
-                let mut map = g_state.map.lock().unwrap();
-                let tile_idx = unit.x + unit.y * map.width;
-                map.units[tile_idx as usize].push(unit.id);
+                let tile_idx = unit.x + unit.y * s_state.map.width;
+                s_state.map.units[tile_idx as usize].push(unit.id);
             }
 
             l_state.unit_ids.push(unit_id);
 
-            send(&l_state.wr, Msg {
+            send(&mut s_state.wrs, l_state.cli_id, Msg {
                 cmd: "you".to_string(),
                 id: Some(unit_id),
 
                 ..Default::default()
             });
 
-            for (unit_idx, unit) in g_state.units.lock().unwrap().iter() {
+            let mut wrs = mem::replace(&mut s_state.wrs, VecMap::new());
+            for (unit_idx, unit) in s_state.units.iter() {
                 if unit_id == unit_idx as i32 { continue; }
 
-                send(&l_state.wr, Msg {
+                send(&mut wrs, l_state.cli_id, Msg {
                     cmd: "unit".to_string(),
                     id: Some(unit_idx as i32),
                     x: Some(unit.x),
@@ -207,8 +215,9 @@ fn on_msg(g_state: &GlobalState,
                     ..Default::default()
                 });
             }
+            mem::replace(&mut s_state.wrs, wrs);
 
-            broadcast(&g_state.wrs, Msg {
+            broadcast(&mut s_state.wrs, Msg {
                 cmd: "unit".to_string(),
                 id: Some(unit_id),
                 x: Some(unit.x),
@@ -238,9 +247,9 @@ fn on_msg(g_state: &GlobalState,
             };
 
             {
-                let mut units = g_state.units.lock().unwrap();
+                let mut s_state = s_state.lock().unwrap();
 
-                let unit = match units.get_mut(&(unit_id as usize)) {
+                let unit = match s_state.units.get_mut(&(unit_id as usize)) {
                     Some(unit) => unit,
                     None => return Err("unit not exists".to_string()),
                 };
@@ -264,10 +273,10 @@ fn on_msg(g_state: &GlobalState,
             };
 
             {
-                let mut units = g_state.units.lock().unwrap();
+                let mut s_state = s_state.lock().unwrap();
 
-                let unit = match units.get_mut(&(unit_id as usize)) {
-                    Some(unit) => unit,
+                let unit = match s_state.units.get_mut(&(unit_id as usize)) {
+                    Some(unit) => unit.clone(),
                     None => return Err("unit not exists".to_string()),
                 };
 
@@ -275,12 +284,12 @@ fn on_msg(g_state: &GlobalState,
                     let x = unit.x + unit.direction.0;
                     let y = unit.y + unit.direction.1;
 
-                    let map = g_state.map.lock().unwrap();
-                    let tile_idx = x + y * map.width;
+                    let tile_idx = x + y * s_state.map.width;
 
-                    if tile_idx >= 0 && tile_idx < map.units.len() as i32 {
-                        for unit_id in &map.units[tile_idx as usize] {
-                            broadcast(&g_state.wrs, Msg {
+                    if tile_idx >= 0 && tile_idx < s_state.map.units.len() as i32 {
+                        let mut wrs = mem::replace(&mut s_state.wrs, VecMap::new());
+                        for unit_id in &s_state.map.units[tile_idx as usize] {
+                            broadcast(&mut wrs, Msg {
                                 cmd: "call".to_string(),
                                 x: Some(unit.id),
                                 y: Some(*unit_id),
@@ -288,6 +297,7 @@ fn on_msg(g_state: &GlobalState,
                                 ..Default::default()
                             });
                         }
+                        mem::replace(&mut s_state.wrs, wrs);
                     }
                 }
             }
@@ -301,7 +311,10 @@ fn on_msg(g_state: &GlobalState,
                         None => return Err("Permission denied".to_string()),
                         Some(pos) => {
                             l_state.unit_ids.remove(pos);
-                            remove_unit(&g_state, unit_id);
+
+                            let mut s_state = s_state.lock().unwrap();
+
+                            remove_unit(&mut s_state, unit_id);
                         }
                     }
                 }
@@ -316,7 +329,9 @@ fn on_msg(g_state: &GlobalState,
                     match pos {
                         None => return Err("Permission denied".to_string()),
                         Some(pos) => {
-                            broadcast(&g_state.wrs, Msg {
+                            let mut s_state = s_state.lock().unwrap();
+
+                            broadcast(&mut s_state.wrs, Msg {
                                 cmd: "chat".to_string(),
                                 id: msg.id,
                                 text: msg.text,
@@ -333,7 +348,9 @@ fn on_msg(g_state: &GlobalState,
         "url" => {
             if let &Some(ref username) = &l_state.username {
                 if g_state.privileged.iter().any(|x| *x == *username) {
-                    broadcast(&g_state.wrs, Msg {
+                    let mut s_state = s_state.lock().unwrap();
+
+                    broadcast(&mut s_state.wrs, Msg {
                         cmd: "url".to_string(),
                         x: msg.x,
                         text: msg.text,
@@ -345,7 +362,14 @@ fn on_msg(g_state: &GlobalState,
         }
 
         "ping" => {
-            l_state.wr.lock().unwrap().pinged = SteadyTime::now();
+            let mut s_state = s_state.lock().unwrap();
+
+            for wr in s_state.wrs.iter_mut() {
+                if wr.0 as i32 == l_state.cli_id {
+                    wr.1.pinged = SteadyTime::now();
+                    break;
+                }
+            }
         }
 
         "close" => {
@@ -359,18 +383,17 @@ fn on_msg(g_state: &GlobalState,
     Ok(())
 }
 
-fn remove_unit(g_state: &GlobalState, unit_id: i32) {
-    let unit = g_state.units.lock().unwrap().remove(&(unit_id as usize)).unwrap();
+fn remove_unit(s_state: &mut SharedState, unit_id: i32) {
+    let unit = s_state.units.remove(&(unit_id as usize)).unwrap();
 
     {
-        let mut map = g_state.map.lock().unwrap();
-        let tile_idx = (unit.x + unit.y * map.width) as usize;
-        map.units[tile_idx].iter().position(|x| *x == unit.id).map(|idx| {
-            map.units[tile_idx].remove(idx);
+        let tile_idx = (unit.x + unit.y * s_state.map.width) as usize;
+        s_state.map.units[tile_idx].iter().position(|x| *x == unit.id).map(|idx| {
+            s_state.map.units[tile_idx].remove(idx);
         });
     }
 
-    broadcast(&g_state.wrs, Msg {
+    broadcast(&mut s_state.wrs, Msg {
         cmd: "remove".to_string(),
         id: Some(unit_id),
 
@@ -547,17 +570,20 @@ pub fn start() {
     let map = load_map("map.toml");
 
     let g_state = GlobalState {
-        map: Arc::new(Mutex::new(map)),
-        units: Arc::new(Mutex::new(VecMap::new())),
-        last_unit_id: Arc::new(Mutex::new(0)),
-        wrs: Arc::new(Mutex::new(VecMap::new())),
         key: key,
         default_img: default_img,
         privileged: privileged,
     };
 
+    let s_state = Arc::new(Mutex::new(SharedState {
+        map: map,
+        units: VecMap::new(),
+        last_unit_id: 0,
+        wrs: VecMap::new(),
+    }));
+
     {
-        let g_state = g_state.clone();
+        let s_state = s_state.clone();
 
         spawn(move || {
             loop {
@@ -565,75 +591,77 @@ pub fn start() {
 
                 let mut msgs = Vec::new();
 
-                for (unit_id, unit) in &mut *g_state.units.lock().unwrap() {
-                    if unit.speed == (0, 0) || unit.cooldown > cur_time {
-                        continue;
-                    }
+                {
+                    let mut s_state = s_state.lock().unwrap();
 
-                    let mut new_x = unit.x + unit.speed.0;
-                    let mut new_y = unit.y + unit.speed.1;
+                    let mut units = mem::replace(&mut s_state.units, VecMap::new());
 
-                    let (tile_idx, vacant) = {
-                        let map = g_state.map.lock().unwrap();
-                        let tile_idx = new_x + new_y * map.width;
-                        if tile_idx >= 0 && tile_idx < map.vacants.len() as i32 {
-                            (Some(tile_idx as usize), map.vacants[tile_idx as usize])
-                        } else {
-                            (None, false)
+                    for (unit_id, unit) in &mut units {
+                        if unit.speed == (0, 0) || unit.cooldown > cur_time {
+                            continue;
                         }
-                    };
 
-                    let mut should_move = false;
-                    let mut speed = unit_speed;
+                        let mut new_x = unit.x + unit.speed.0;
+                        let mut new_y = unit.y + unit.speed.1;
 
-                    if let Some(tile_idx) = tile_idx {
-                        let map = g_state.map.lock().unwrap();
-                        for trigger in &map.triggers[tile_idx] {
-                            match trigger {
-                                &Trigger::Move(x, y) => {
-                                    should_move = true;
+                        let (tile_idx, vacant) = {
+                            let tile_idx = new_x + new_y * s_state.map.width;
+                            if tile_idx >= 0 && tile_idx < s_state.map.vacants.len() as i32 {
+                                (Some(tile_idx as usize), s_state.map.vacants[tile_idx as usize])
+                            } else {
+                                (None, false)
+                            }
+                        };
 
-                                    new_x = x;
-                                    new_y = y;
+                        let mut should_move = false;
+                        let mut speed = unit_speed;
 
-                                    speed = 0;
+                        if let Some(tile_idx) = tile_idx {
+                            for trigger in &s_state.map.triggers[tile_idx] {
+                                match trigger {
+                                    &Trigger::Move(x, y) => {
+                                        should_move = true;
+
+                                        new_x = x;
+                                        new_y = y;
+
+                                        speed = 0;
+                                    }
                                 }
                             }
                         }
-                    }
 
-                    if should_move || vacant {
-                        {
-                            let mut map = g_state.map.lock().unwrap();
+                        if should_move || vacant {
+                            let prev_tile_idx = (unit.x + unit.y * s_state.map.width) as usize;
 
-                            let prev_tile_idx = (unit.x + unit.y * map.width) as usize;
-
-                            map.units[prev_tile_idx].iter().position(|x| *x == unit.id).map(|idx| {
-                                map.units[prev_tile_idx].remove(idx);
+                            s_state.map.units[prev_tile_idx].iter().position(|x| *x == unit.id).map(|idx| {
+                                s_state.map.units[prev_tile_idx].remove(idx);
                             });
 
-                            map.units[tile_idx.unwrap()].push(unit.id);
+                            s_state.map.units[tile_idx.unwrap()].push(unit.id);
+
+                            unit.x = new_x;
+                            unit.y = new_y;
+
+                            unit.cooldown = cur_time + Duration::milliseconds(200);
+
+                            msgs.push(Msg {
+                                cmd: "move".to_string(),
+                                id: Some(unit_id as i32),
+                                x: Some(unit.x),
+                                y: Some(unit.y),
+                                speed: Some(speed),
+
+                                ..Default::default()
+                            });
                         }
-
-                        unit.x = new_x;
-                        unit.y = new_y;
-
-                        unit.cooldown = cur_time + Duration::milliseconds(200);
-
-                        msgs.push(Msg {
-                            cmd: "move".to_string(),
-                            id: Some(unit_id as i32),
-                            x: Some(unit.x),
-                            y: Some(unit.y),
-                            speed: Some(speed),
-
-                            ..Default::default()
-                        });
                     }
-                }
 
-                for msg in msgs {
-                    broadcast(&g_state.wrs, msg);
+                    mem::replace(&mut s_state.units, units);
+
+                    for msg in msgs {
+                        broadcast(&mut s_state.wrs, msg);
+                    }
                 }
 
                 sleep(StdDuration::milliseconds(10));
@@ -642,18 +670,20 @@ pub fn start() {
     }
 
     {
-        let g_state = g_state.clone();
+        let s_state = s_state.clone();
 
         spawn(move || {
             loop {
                 let cur_time = SteadyTime::now();
 
-                for (_, wr) in g_state.wrs.lock().unwrap().iter_mut() {
-                    let mut wr = wr.lock().unwrap();
+                {
+                    let mut s_state = s_state.lock().unwrap();
 
-                    if cur_time - wr.pinged >= Duration::seconds(30) {
-                        use std::net::Shutdown::Both;
-                        wr.sender.get_mut().shutdown(Both);
+                    for (_, wr) in s_state.wrs.iter_mut() {
+                        if cur_time - wr.pinged >= Duration::seconds(30) {
+                            use std::net::Shutdown::Both;
+                            wr.sender.get_mut().shutdown(Both);
+                        }
                     }
                 }
 
@@ -666,6 +696,7 @@ pub fn start() {
 
     for sock in server {
         let g_state = g_state.clone();
+        let s_state = s_state.clone();
 
         last_cli_id += 1;
         let cli_id = last_cli_id;
@@ -684,11 +715,11 @@ pub fn start() {
 
             let mut l_state = LocalState {
                 unit_ids: vec![],
-                wr: Arc::new(Mutex::new(wr)),
                 username: None,
+                cli_id: cli_id,
             };
 
-            g_state.wrs.lock().unwrap().insert(cli_id, l_state.wr.clone());
+            s_state.lock().unwrap().wrs.insert(cli_id as usize, wr);
 
             for msg in rd.incoming_messages() {
                 let msg = match msg {
@@ -706,7 +737,7 @@ pub fn start() {
                             }
                         };
 
-                        match on_msg(&g_state, &mut l_state, msg) {
+                        match on_msg(&g_state, &s_state, &mut l_state, msg) {
                             Err(err) => {
                                 println!("Client error: {}", err);
                                 break;
@@ -721,16 +752,15 @@ pub fn start() {
 
             println!("Socket closed from {:?}", ip);
 
+            let mut s_state = s_state.lock().unwrap();
+
             for unit_id in l_state.unit_ids {
-                remove_unit(&g_state, unit_id);
+                remove_unit(&mut s_state, unit_id);
             }
 
-            {
-                let mut wrs = g_state.wrs.lock().unwrap();
-                wrs.remove(&cli_id);
+            s_state.wrs.remove(&(cli_id as usize));
 
-                println!("Remaining clients: {}", wrs.len());
-            }
+            println!("Remaining clients: {}", s_state.wrs.len());
         });
     }
 }
