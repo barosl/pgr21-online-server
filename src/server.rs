@@ -296,10 +296,14 @@ fn on_msg(g_state: &GlobalState,
         "remove" => {
             match msg.id {
                 Some(unit_id) => {
-                    if !l_state.unit_ids.iter().any(|x| *x == unit_id) {
-                        return Err("Permission denied".to_string());
+                    let pos = l_state.unit_ids.iter().position(|x| *x == unit_id);
+                    match pos {
+                        None => return Err("Permission denied".to_string()),
+                        Some(pos) => {
+                            l_state.unit_ids.remove(pos);
+                            remove_unit(&g_state, unit_id);
+                        }
                     }
-                    remove_unit(&g_state, unit_id);
                 }
                 None => return Err("No unit_id provided".to_string()),
             }
