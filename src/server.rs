@@ -191,19 +191,6 @@ fn on_msg(g_state: &GlobalState,
                 ..Default::default()
             });
 
-            broadcast(&g_state.wrs, Msg {
-                cmd: "unit".to_string(),
-                id: Some(unit_id),
-                x: Some(unit.x),
-                y: Some(unit.y),
-                name: Some(unit.name),
-                img: Some(unit.img),
-                text: Some(unit.text),
-                style: Some(unit.style),
-
-                ..Default::default()
-            });
-
             for (unit_idx, unit) in g_state.units.lock().unwrap().iter() {
                 if unit_id == unit_idx as i32 { continue; }
 
@@ -220,6 +207,19 @@ fn on_msg(g_state: &GlobalState,
                     ..Default::default()
                 });
             }
+
+            broadcast(&g_state.wrs, Msg {
+                cmd: "unit".to_string(),
+                id: Some(unit_id),
+                x: Some(unit.x),
+                y: Some(unit.y),
+                name: Some(unit.name),
+                img: Some(unit.img),
+                text: Some(unit.text),
+                style: Some(unit.style),
+
+                ..Default::default()
+            });
         }
 
         "speed" => {
