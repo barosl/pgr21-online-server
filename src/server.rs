@@ -702,7 +702,11 @@ pub fn start() {
         let cli_id = last_cli_id;
 
         spawn(move || {
-            let sock = sock.unwrap().read_request().unwrap().accept().send().unwrap();
+            let sock = match sock.unwrap().read_request() {
+                Ok(sock) => sock,
+                Err(..) => return,
+            };
+            let sock = sock.accept().send().unwrap();
 
             let (mut wr, mut rd) = sock.split();
 
