@@ -6,12 +6,8 @@ authors = ["Barosl Lee"]
 
 [dependencies]
 
-#websocket = "*"
-websocket = { path = "../rust-websocket" }
-
-#mysql = "*"
-mysql = { path = "../rust-mysql-simple" }
-
+websocket = "*"
+mysql = "*"
 rustc-serialize = "*"
 time = "*"
 toml = "*"
