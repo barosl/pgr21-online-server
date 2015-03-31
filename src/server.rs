@@ -288,6 +288,18 @@ fn on_msg(g_state: &GlobalState,
             }
         }
 
+        "remove" => {
+            match msg.id {
+                Some(unit_id) => {
+                    if !l_state.unit_ids.iter().any(|x| *x == unit_id) {
+                        return Err("Permission denied".to_string());
+                    }
+                    remove_unit(&g_state, unit_id);
+                }
+                None => return Err("No unit_id provided".to_string()),
+            }
+        }
+
         "close" => {
             return Err("Manually closed".to_string());
         }
@@ -297,6 +309,25 @@ fn on_msg(g_state: &GlobalState,
     };
 
     Ok(())
+}
+
+fn remove_unit(g_state: &GlobalState, unit_id: i32) {
+    let unit = g_state.units.lock().unwrap().remove(&(unit_id as usize)).unwrap();
+
+    {
+        let mut map = g_state.map.lock().unwrap();
+        let tile_idx = (unit.x + unit.y * map.width) as usize;
+        map.units[tile_idx].iter().position(|x| *x == unit.id).map(|idx| {
+            map.units[tile_idx].remove(idx);
+        });
+    }
+
+    broadcast(&g_state.wrs, Msg {
+        cmd: "remove".to_string(),
+        id: Some(unit_id),
+
+        ..Default::default()
+    });
 }
 
 #[derive(RustcDecodable)]
@@ -607,22 +638,7 @@ pub fn start() {
             }
 
             for unit_id in l_state.unit_ids {
-                let unit = g_state.units.lock().unwrap().remove(&(unit_id as usize)).unwrap();
-
-                {
-                    let mut map = g_state.map.lock().unwrap();
-                    let tile_idx = (unit.x + unit.y * map.width) as usize;
-                    map.units[tile_idx].iter().position(|x| *x == unit.id).map(|idx| {
-                        map.units[tile_idx].remove(idx);
-                    });
-                }
-
-                broadcast(&g_state.wrs, Msg {
-                    cmd: "remove".to_string(),
-                    id: Some(unit_id),
-
-                    ..Default::default()
-                });
+                remove_unit(&g_state, unit_id);
             }
 
             g_state.wrs.lock().unwrap().remove(&cli_id);
