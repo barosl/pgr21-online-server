@@ -309,6 +309,27 @@ fn on_msg(g_state: &GlobalState,
             }
         }
 
+        "chat" => {
+            match msg.id {
+                Some(unit_id) => {
+                    let pos = l_state.unit_ids.iter().position(|x| *x == unit_id);
+                    match pos {
+                        None => return Err("Permission denied".to_string()),
+                        Some(pos) => {
+                            broadcast(&g_state.wrs, Msg {
+                                cmd: "chat".to_string(),
+                                id: msg.id,
+                                text: msg.text,
+
+                                ..Default::default()
+                            });
+                        }
+                    }
+                }
+                None => return Err("No unit_id provided".to_string()),
+            }
+        }
+
         "ping" => {
             l_state.wr.lock().unwrap().pinged = SteadyTime::now();
         }
