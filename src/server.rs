@@ -725,7 +725,12 @@ pub fn start() {
                 remove_unit(&g_state, unit_id);
             }
 
-            g_state.wrs.lock().unwrap().remove(&cli_id);
+            {
+                let mut wrs = g_state.wrs.lock().unwrap();
+                wrs.remove(&cli_id);
+
+                println!("Remaining clients: {}", wrs.len());
+            }
         });
     }
 }
