@@ -62,12 +62,17 @@ struct Map {
     triggers: Vec<Vec<Trigger>>,
 }
 
+struct SenderState {
+    sender: Sender<WebSocketStream>,
+    pinged: SteadyTime,
+}
+
 #[derive(Clone)]
 struct GlobalState {
     map: Arc<Mutex<Map>>,
     units: Arc<Mutex<VecMap<Unit>>>,
     last_unit_id: Arc<Mutex<i32>>,
-    wrs: Arc<Mutex<VecMap<Arc<Mutex<Sender<WebSocketStream>>>>>>,
+    wrs: Arc<Mutex<VecMap<Arc<Mutex<SenderState>>>>>,
     key: String,
     default_img: String,
     privileged: Vec<String>,
@@ -75,21 +80,21 @@ struct GlobalState {
 
 struct LocalState {
     unit_ids: Vec<i32>,
-    wr: Arc<Mutex<Sender<WebSocketStream>>>,
+    wr: Arc<Mutex<SenderState>>,
     username: Option<String>,
 }
 
 #[allow(unused_must_use)]
-fn send(wr: &Arc<Mutex<Sender<WebSocketStream>>>, msg: Msg) {
-    wr.lock().unwrap().send_message(Message::Text(json::encode(&msg).unwrap()));
+fn send(wr: &Arc<Mutex<SenderState>>, msg: Msg) {
+    wr.lock().unwrap().sender.send_message(Message::Text(json::encode(&msg).unwrap()));
 }
 
 #[allow(unused_must_use)]
-fn broadcast(wrs: &Arc<Mutex<VecMap<Arc<Mutex<Sender<WebSocketStream>>>>>>, msg: Msg) {
+fn broadcast(wrs: &Arc<Mutex<VecMap<Arc<Mutex<SenderState>>>>>, msg: Msg) {
     let msg = Message::Text(json::encode(&msg).unwrap());
 
     for wr in &*wrs.lock().unwrap() {
-        wr.1.lock().unwrap().send_message(msg.clone());
+        wr.1.lock().unwrap().sender.send_message(msg.clone());
     }
 }
 
@@ -298,6 +303,10 @@ fn on_msg(g_state: &GlobalState,
                 }
                 None => return Err("No unit_id provided".to_string()),
             }
+        }
+
+        "ping" => {
+            l_state.wr.lock().unwrap().pinged = SteadyTime::now();
         }
 
         "close" => {
@@ -593,6 +602,27 @@ pub fn start() {
         });
     }
 
+    {
+        let g_state = g_state.clone();
+
+        spawn(move || {
+            loop {
+                let cur_time = SteadyTime::now();
+
+                for (_, wr) in g_state.wrs.lock().unwrap().iter_mut() {
+                    let mut wr = wr.lock().unwrap();
+
+                    if cur_time - wr.pinged >= Duration::seconds(30) {
+                        use std::net::Shutdown::Both;
+                        wr.sender.get_mut().shutdown(Both);
+                    }
+                }
+
+                sleep(StdDuration::seconds(30));
+            }
+        });
+    }
+
     let mut last_cli_id = 0;
 
     for sock in server {
@@ -604,7 +634,14 @@ pub fn start() {
         spawn(move || {
             let sock = sock.unwrap().read_request().unwrap().accept().send().unwrap();
 
-            let (wr, mut rd) = sock.split();
+            let (mut wr, mut rd) = sock.split();
+
+            let ip = wr.get_mut().peer_addr().unwrap();
+
+            let wr = SenderState {
+                sender: wr,
+                pinged: SteadyTime::now(),
+            };
 
             let mut l_state = LocalState {
                 unit_ids: vec![],
@@ -622,7 +659,13 @@ pub fn start() {
 
                 match msg {
                     Message::Text(text) => {
-                        let msg: Msg = json::decode(&*text).unwrap();
+                        let msg: Msg = match json::decode(&*text) {
+                            Ok(msg) => msg,
+                            Err(..) => {
+                                println!("Invalid message format");
+                                break;
+                            }
+                        };
 
                         match on_msg(&g_state, &mut l_state, msg) {
                             Err(err) => {
@@ -636,6 +679,8 @@ pub fn start() {
                     _ => ()
                 }
             }
+
+            println!("Socket closed from {:?}", ip);
 
             for unit_id in l_state.unit_ids {
                 remove_unit(&g_state, unit_id);
